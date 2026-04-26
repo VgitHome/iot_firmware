@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>IOT Dashboard</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial;
+      text-align: center;
+      margin: 20px;
+    }
+
+    .section {
+      margin: 20px auto;
+      max-width: 900px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+
+    .card {
+      border: 1px solid #ccc;
+      padding: 10px;
+      border-radius: 8px;
+      background: #f9f9f9;
+    }
+
+    input {
+      width: 80px;
+      padding: 5px;
+      text-align: center;
+    }
+
+    .id-box {
+      margin-bottom: 20px;
+    }
+
+    #loginModal {
+      position: fixed;
+      top:0; left:0;
+      width:100%; height:100%;
+      background: rgba(0,0,0,0.6);
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      z-index:1000;
+    }
+
+    #loginBox {
+      background:#fff;
+      padding:20px;
+      border-radius:10px;
+      width:300px;
+      text-align:center;
+    }
+
+    #loginBox input {
+      width:90%;
+      margin:5px;
+      padding:8px;
+    }
+
+    #loginBox button {
+      margin-top:10px;
+      padding:8px 20px;
+    }
+
+    #logoutBtn {
+      position:absolute;
+      right:20px;
+      top:20px;
+    }
+  </style>
+</head>
+
+<body>
+
+<!-- LOGIN MODAL -->
+<div id="loginModal">
+  <div id="loginBox">
+    <h3>Device Login</h3>
+    <input id="deviceInput" placeholder="Device ID"><br>
+    <input id="passInput" type="password" placeholder="Password"><br>
+    <button onclick="login()">Connect</button>
+  </div>
+</div>
+
+<button id="logoutBtn" onclick="logout()">Logout</button>
+
+<h2>IOT Dashboard</h2>
+
+<div class="id-box">
+  Device: <span id="deviceId">--</span>
+</div>
+
+<div class="section">
+  <h3> PARAMETERS </h3>
+  <div class="grid" id="readGrid"></div>
+</div>
+
+<div class="section">
+  <h3>INPUT PARAMETERS</h3>
+  <div class="grid" id="writeGrid"></div>
+</div>
+
+<script>
+let client;
+let deviceId = "";
+let mqttUser = "dash";
+let mqttPass = "";
+let topic = "gw";
+
+const broker = "wss://g8011bee.ala.asia-southeast1.emqxsl.com:8084/mqtt";
+
+// REG MAP
+const regMap = [
+  1,3,5,7,9,11,13,15,17,19,
+  21,23,25,27,29,31,33,35,37,39,
+  41,43,45,201,203,205,207,209,211,213
+];
+
+const readableRegs = regMap.slice(0, 23);
+const writableRegs = [201,203,205,207,209,211,213];
+
+let currentValues = {};
+
+// BUILD UI
+const readGrid = document.getElementById("readGrid");
+readableRegs.forEach(reg => {
+  const div = document.createElement("div");
+  div.className = "card";
+  div.innerHTML = `<b>CH ${reg}</b><br><span id="r${reg}">--</span>`;
+  readGrid.appendChild(div);
+});
+
+const writeGrid = document.getElementById("writeGrid");
+writableRegs.forEach(reg => {
+  const div = document.createElement("div");
+  div.className = "card";
+  div.innerHTML = `
+    <b>CH ${reg}</b><br>
+    <input type="number"
+           id="input${reg}"
+           min="0"
+           max="65535"
+           step="1"
+           placeholder="--"
+           onchange="writeReg(${reg})">
+  `;
+  writeGrid.appendChild(div);
+});
+
+// AUTO LOGIN
+window.onload = function () {
+  const savedDevice = localStorage.getItem("deviceId");
+  const savedPass   = localStorage.getItem("mqttPass");
+
+  if (savedDevice && savedPass) {
+    deviceId = savedDevice;
+    mqttPass = savedPass;
+    mqttUser = "dash";
+
+    document.getElementById("loginModal").style.display = "none";
+    startMQTT();
+  }
+};
+
+// LOGIN
+function login() {
+  deviceId = document.getElementById("deviceInput").value.trim();
+  mqttPass = document.getElementById("passInput").value.trim();
+
+  if (!deviceId || !mqttPass) {
+    alert("Enter Device ID and Password");
+    return;
+  }
+
+  mqttUser = "dash";
+
+  localStorage.setItem("deviceId", deviceId);
+  localStorage.setItem("mqttPass", mqttPass);
+
+  document.getElementById("loginModal").style.display = "none";
+
+  startMQTT();
+}
+
+// LOGOUT
+function logout() {
+  localStorage.clear();
+  if (client) client.end(true);
+  location.reload();
+}
+
+// START MQTT
+function startMQTT() {
+
+  console.log("Connecting MQTT...");
+  console.log("User:", mqttUser);
+  console.log("Device:", deviceId);
+
+  client = mqtt.connect(broker, {
+    username: mqttUser,
+    password: mqttPass,
+    clientId: "web_" + deviceId + "_" + Math.random()
+  });
+
+  client.on("connect", () => {
+    console.log("✅ MQTT Connected");
+    document.getElementById("deviceId").innerText = deviceId;
+    client.subscribe(topic);
+  });
+
+  client.on("error", (err) => {
+    console.error("❌ MQTT ERROR:", err);
+    alert("Login failed → check password");
+  });
+
+  client.on("message", (t, message) => {
+    console.log("RX:", message.toString());
+
+    try {
+      const msg = JSON.parse(message.toString());
+
+      document.getElementById("deviceId").innerText = msg.device || deviceId;
+
+      const data = msg.data || {};
+
+      regMap.forEach((reg, index) => {
+        const key = "r" + index;
+
+        if (data[key] !== undefined)
+        {
+          currentValues[reg] = data[key];
+
+          const readEl = document.getElementById("r" + reg);
+          if (readEl) readEl.innerText = data[key];
+
+          const inputEl = document.getElementById("input" + reg);
+          if (inputEl && document.activeElement !== inputEl)
+          {
+            inputEl.value = data[key];
+          }
+        }
+      });
+
+    } catch (e) {
+      console.error("JSON error", e);
+    }
+  });
+}
+
+// WRITE
+function writeReg(reg)
+{
+  let val = parseInt(document.getElementById("input" + reg).value);
+
+  if (isNaN(val) || val < 0 || val > 65535) {
+    alert("Value must be 0–65535");
+    return;
+  }
+
+  const payload = JSON.stringify({
+    device: deviceId,
+    cmd: "write",
+    reg: reg,
+    val: val
+  });
+
+  console.log("TX:", payload);
+  client.publish(topic, payload);
+}
+</script>
+
+</body>
+</html>
